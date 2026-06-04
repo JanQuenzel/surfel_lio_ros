@@ -8,6 +8,7 @@ endif()
 # Set C++17 standard
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+SET(CMAKE_BUILD_TYPE Release)
 
 # Find dependencies
 find_package(ament_cmake REQUIRED)
