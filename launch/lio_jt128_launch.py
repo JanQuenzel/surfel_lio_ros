@@ -49,7 +49,7 @@ def generate_launch_description():
 
         # LIO Node
         Node(
-            package='lio_ros_wrapper',
+            package='surfel_lio_ros',
             executable='lio_node',
             name='lio_node',
             output='screen',

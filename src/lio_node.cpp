@@ -371,15 +371,14 @@ private:
                 if ( std::isfinite(point.x) )
                 cloud->push_back(point);
             }
-            static double first_stamp = timestamp;
+            //static double first_stamp = timestamp;
 
-            RCLCPP_INFO_STREAM(this->get_logger(), "t_dt: " << (timestamp - first_stamp) << " dt: " << (min_time_s - timestamp));
+            //RCLCPP_INFO_STREAM(this->get_logger(), "t_dt: " << (timestamp - first_stamp) << " dt: " << (min_time_s - timestamp));
 
             double dt = timestamp - min_time_s;
 
-            static double first_stamp_dt = min_time_s + dt;
-
-            RCLCPP_INFO_STREAM(this->get_logger(), "pts: " << cloud->size() << " odt: " << dt << " e: " << (min_time_s + dt - first_stamp) << " l: " << (timestamp - first_stamp_dt)); // << " t: " << timestamp << " b: " << min_time_s  << " e:" << max_time_s);
+            //static double first_stamp_dt = min_time_s + dt;
+            //RCLCPP_INFO_STREAM(this->get_logger(), "pts: " << cloud->size() << " odt: " << dt << " e: " << (min_time_s + dt - first_stamp) << " l: " << (timestamp - first_stamp_dt)); // << " t: " << timestamp << " b: " << min_time_s  << " e:" << max_time_s);
 
             //timestamp = max_time_s; // we want last timestamp here.
 
