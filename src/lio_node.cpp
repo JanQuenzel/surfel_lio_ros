@@ -147,6 +147,7 @@ public:
         // Configure extrinsics
         estimator_->m_params.R_il = config_.extrinsics.R_il.cast<float>();
         estimator_->m_params.t_il = config_.extrinsics.t_il.cast<float>();
+        RCLCPP_INFO_STREAM(this->get_logger(), "Extrinsics: R: " << estimator_->m_params.R_il << "\nt: " << estimator_->m_params.t_il.transpose() );
         
         // Configure gravity
         estimator_->m_params.gravity = config_.imu.gravity.cast<float>();
@@ -287,6 +288,24 @@ private:
             }
         }
         
+        bool has_t_time = false;
+        for (const auto& field : msg->fields) {
+            if (field.name == "t") {
+                has_t_time = true;
+                break;
+            }
+        }
+
+        bool has_double_time = false;
+        for (const auto& field : msg->fields) {
+            if (field.name == "timestamp") {
+                has_double_time = true;
+                break;
+            }
+        }
+
+        bool not_handled = true;
+        // Livox
         if (has_intensity && has_offset_time) {
             sensor_msgs::PointCloud2ConstIterator<float> iter_intensity(*msg, "intensity");
             sensor_msgs::PointCloud2ConstIterator<uint32_t> iter_offset_time(*msg, "offset_time");
@@ -300,7 +319,78 @@ private:
                 point.offset_time = static_cast<float>(static_cast<double>(*iter_offset_time) / 1e9);  // uint32 (ns) -> double -> float (sec)
                 cloud->push_back(point);
             }
-        } else if (has_intensity) {
+            not_handled = false;
+        }
+
+        // Ouster
+        if (has_intensity && has_t_time) {
+            sensor_msgs::PointCloud2ConstIterator<float> iter_intensity(*msg, "intensity");
+            sensor_msgs::PointCloud2ConstIterator<uint32_t> iter_t_time(*msg, "t");
+            //int num = 0;
+            for (; iter_x != iter_x.end(); ++iter_x, ++iter_y, ++iter_z, ++iter_intensity, ++iter_t_time) {
+                Point3D point;
+                point.x = *iter_x;
+                point.y = *iter_y;
+                point.z = *iter_z;
+                point.intensity = *iter_intensity;
+                point.offset_time = static_cast<float>(static_cast<uint32_t>(*iter_t_time) * 1e-9);  // uint32 (ns) -> double -> float (sec)
+
+                //if ( num % 256 == 0 )
+                //   RCLCPP_INFO_STREAM(this->get_logger(), "pt: " << num << " " <<  point.x << " " << point.y << " " << point.z << " " << point.intensity << " " << point.offset_time << " / " << (*iter_t_time));
+                //++num;
+                if ( std::isfinite(point.x) )
+                cloud->push_back(point);
+            }
+            not_handled = false;
+            //RCLCPP_INFO_STREAM(this->get_logger(), "pts: " << cloud->size() );
+        }
+
+        // HESAI
+        if (has_intensity && has_double_time) {
+            sensor_msgs::PointCloud2ConstIterator<float> iter_intensity(*msg, "intensity");
+            sensor_msgs::PointCloud2ConstIterator<double> iter_t_time(*msg, "timestamp");
+            // int num = 0;
+            double min_time_s = (iter_t_time != iter_t_time.end()) ? *iter_t_time : 0;
+            double max_time_s = (iter_t_time != iter_t_time.end()) ? *iter_t_time : 0;
+            //const int64_t min_time = static_cast<int64_t>(((iter_t_time != iter_t_time.end()) ? *iter_t_time : 0) * 1e9);
+            const int64_t min_time = static_cast<int64_t>(((iter_t_time != iter_t_time.end()) ? *iter_t_time : 0) * 1e9);
+            for (; iter_x != iter_x.end(); ++iter_x, ++iter_y, ++iter_z, ++iter_intensity, ++iter_t_time) {
+                Point3D point;
+                point.x = *iter_x;
+                point.y = *iter_y;
+                point.z = *iter_z;
+                point.intensity = *iter_intensity;
+
+                //if ( min_time_s > *iter_t_time) min_time_s = *iter_t_time;
+                if ( max_time_s < *iter_t_time) max_time_s = *iter_t_time;
+                point.offset_time = static_cast<float>((static_cast<int64_t>(*iter_t_time*1e9)-min_time)*1e-9);  // uint32 (ns) -> double -> float (sec)
+
+                // if ( num % 256 == 0 )
+                //   RCLCPP_INFO_STREAM(this->get_logger(), "pt: " << num << " " <<  point.x << " " << point.y << " " << point.z << " " << point.intensity << " " << point.offset_time << " / " << (*iter_t_time) << " m: " << min_time);
+                // ++num;
+                if ( std::isfinite(point.x) )
+                cloud->push_back(point);
+            }
+            static double first_stamp = timestamp;
+
+            RCLCPP_INFO_STREAM(this->get_logger(), "t_dt: " << (timestamp - first_stamp) << " dt: " << (min_time_s - timestamp));
+
+            double dt = timestamp - min_time_s;
+
+            static double first_stamp_dt = min_time_s + dt;
+
+            RCLCPP_INFO_STREAM(this->get_logger(), "pts: " << cloud->size() << " odt: " << dt << " e: " << (min_time_s + dt - first_stamp) << " l: " << (timestamp - first_stamp_dt)); // << " t: " << timestamp << " b: " << min_time_s  << " e:" << max_time_s);
+
+            //timestamp = max_time_s; // we want last timestamp here.
+
+            timestamp = max_time_s + dt; // we want last timestamp here.
+            
+            
+            not_handled = false;
+            //RCLCPP_INFO_STREAM(this->get_logger(), "pts: " << cloud->size() << " dt: " << (max_time_s-min_time_s) << " h: " << (timestamp - min_time_s)); // << " t: " << timestamp << " b: " << min_time_s  << " e:" << max_time_s);
+        }
+
+        if ( not_handled && has_intensity ) {
             sensor_msgs::PointCloud2ConstIterator<float> iter_intensity(*msg, "intensity");
             
             for (; iter_x != iter_x.end(); ++iter_x, ++iter_y, ++iter_z, ++iter_intensity) {
@@ -312,7 +402,10 @@ private:
                 point.offset_time = 0.0f;  // No offset time
                 cloud->push_back(point);
             }
-        } else {
+            not_handled = false;
+        }
+
+        if ( not_handled ) {
             // No intensity, no offset_time
             for (; iter_x != iter_x.end(); ++iter_x, ++iter_y, ++iter_z) {
                 Point3D point;
@@ -364,6 +457,7 @@ private:
             processed_count++;
             
             // Check timestamp ordering (only warn if violation > 10ms)
+            //if constexpr ( false )
             if (last_timestamp >= 0.0 && event.timestamp < last_timestamp) {
                 double diff = event.timestamp - last_timestamp;
                 if (diff < -0.01) {  // -10ms threshold
