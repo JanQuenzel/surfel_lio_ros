@@ -16,7 +16,7 @@ import os
 
 def generate_launch_description():
     # Get package share directory
-    pkg_share = get_package_share_directory('lio_ros_wrapper')
+    pkg_share = get_package_share_directory('surfel_lio_ros')
     # Use config from lidar_inertial_odometry subdirectory
     default_config = os.path.join(pkg_share, 'config', 'lidar_inertial_odometry', 'mid360.yaml')
     

@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>lio_ros_wrapper</name>
+  <name>surfel_lio_ros</name>
   <version>0.1.0</version>
   <description>ROS2 wrapper for LiDAR-Inertial Odometry</description>
   <maintainer email="csw3575@snu.ac.kr">Seungwon Choi</maintainer>
