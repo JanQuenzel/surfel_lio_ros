@@ -147,7 +147,7 @@ public:
         // Configure extrinsics
         estimator_->m_params.R_il = config_.extrinsics.R_il.cast<float>();
         estimator_->m_params.t_il = config_.extrinsics.t_il.cast<float>();
-        RCLCPP_INFO_STREAM(this->get_logger(), "Extrinsics: R: " << estimator_->m_params.R_il << "\nt: " << estimator_->m_params.t_il.transpose() );
+        RCLCPP_INFO_STREAM(this->get_logger(), "Extrinsics: R: " << estimator_->m_params.R_il << "\nt: " << estimator_->m_params.t_il.transpose() << " det: " << estimator_->m_params.R_il.determinant() );
         
         // Configure gravity
         estimator_->m_params.gravity = config_.imu.gravity.cast<float>();
@@ -461,8 +461,8 @@ private:
                 double diff = event.timestamp - last_timestamp;
                 if (diff < -0.01) {  // -10ms threshold
                     RCLCPP_ERROR(this->get_logger(), 
-                                "TIMESTAMP ORDER VIOLATION! last=%.9f, current=%.9f (diff=%.9f)",
-                                last_timestamp, event.timestamp, diff);
+                                "TIMESTAMP ORDER VIOLATION! last=%.9f, current=%.9f (diff=%.9f) IMU: %i",
+                                last_timestamp, event.timestamp, diff,event.type==SensorType::IMU);
                 } else {
                     RCLCPP_DEBUG(this->get_logger(), 
                                 "Minor timestamp reordering: last=%.9f, current=%.9f (diff=%.9f)",
@@ -753,6 +753,11 @@ private:
         T_wb.block<3, 3>(0, 0) = state.m_rotation;
         T_wb.block<3, 1>(0, 3) = state.m_position;
         
+        Eigen::Matrix4f T_il = Eigen::Matrix4f::Identity();
+        T_il.block<3, 3>(0, 0) = estimator_->m_params.R_il.template cast<float>();
+        T_il.block<3, 1>(0, 3) = estimator_->m_params.t_il.template cast<float>();
+        Eigen::Matrix4f T_wl = T_wb * T_il;
+        
         sensor_msgs::msg::PointCloud2 cloud_msg;
         cloud_msg.header.stamp = timestamp;
         cloud_msg.header.frame_id = "map";
@@ -775,7 +780,7 @@ private:
         
         for (const auto& point : *cloud) {
             // Transform to world frame
-            Eigen::Vector3f p_w = T_wb.block<3, 3>(0, 0) * Eigen::Vector3f(point.x, point.y, point.z) + T_wb.block<3, 1>(0, 3);
+            Eigen::Vector3f p_w = T_wl.block<3, 3>(0, 0) * Eigen::Vector3f(point.x, point.y, point.z) + T_wl.block<3, 1>(0, 3);
             
             *iter_x = p_w.x();
             *iter_y = p_w.y();
