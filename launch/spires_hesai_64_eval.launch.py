@@ -61,11 +61,11 @@ def generate_launch_description():
         ),
         
         # RViz2
-        Node(
-            package='rviz2',
-            executable='rviz2',
-            name='rviz2',
-            arguments=['-d', default_rviz_config],
-            output='screen'
-        ),
+#        Node(
+#            package='rviz2',
+#            executable='rviz2',
+#            name='rviz2',
+#            arguments=['-d', default_rviz_config],
+#            output='screen'
+#        ),
     ])

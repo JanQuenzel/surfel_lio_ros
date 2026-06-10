@@ -32,6 +32,8 @@
 
 using namespace lio;
 
+std::shared_ptr<std::ofstream> regPosesFile = nullptr;
+
 /**
  * @brief LIO processing result for publisher thread
  */
@@ -189,7 +191,7 @@ public:
             publisher_thread_.join();
             RCLCPP_INFO(this->get_logger(), "Publisher thread stopped");
         }
-        
+        if ( regPosesFile ) { regPosesFile->close(); regPosesFile = nullptr; }
         RCLCPP_INFO(this->get_logger(), "LIO Node shutdown complete");
     }
 
@@ -568,6 +570,15 @@ private:
         
         Eigen::Quaternionf q(state.m_rotation);
         q.normalize();
+
+        {
+            if ( ! regPosesFile ) regPosesFile = std::make_shared<std::ofstream>("./surfel_lio_after_map_poses.txt");
+            if ( regPosesFile && regPosesFile->is_open() )
+            {
+                const int64_t stamp = ros_time.nanoseconds();
+                (*regPosesFile) << stamp << " " << state.m_position.x() << " " << state.m_position.y() << " " << state.m_position.z() << " " << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << std::endl;
+            }
+        }
         
         auto pose_msg = geometry_msgs::msg::PoseStamped();
         pose_msg.header.stamp = ros_time;
@@ -709,6 +720,11 @@ private:
         T_wb.block<3, 3>(0, 0) = state.m_rotation;
         T_wb.block<3, 1>(0, 3) = state.m_position;
         
+        Eigen::Matrix4f T_il = Eigen::Matrix4f::Identity();
+        T_il.block<3, 3>(0, 0) = estimator_->m_params.R_il.template cast<float>();
+        T_il.block<3, 1>(0, 3) = estimator_->m_params.t_il.template cast<float>();
+        Eigen::Matrix4f T_wl = T_wb * T_il;
+        
         sensor_msgs::msg::PointCloud2 cloud_msg;
         cloud_msg.header.stamp = timestamp;
         cloud_msg.header.frame_id = "map";
@@ -730,7 +746,7 @@ private:
         
         for (const auto& point : *cloud) {
             // Transform to world frame
-            Eigen::Vector3f p_w = T_wb.block<3, 3>(0, 0) * Eigen::Vector3f(point.x, point.y, point.z) + T_wb.block<3, 1>(0, 3);
+            Eigen::Vector3f p_w = T_wl.block<3, 3>(0, 0) * Eigen::Vector3f(point.x, point.y, point.z) + T_wl.block<3, 1>(0, 3);
             
             *iter_x = p_w.x();
             *iter_y = p_w.y();
