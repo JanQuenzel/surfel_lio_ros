@@ -29,10 +29,18 @@
 #include "Estimator.h"
 #include "ConfigUtils.h"
 #include "SensorEventQueue.h"
+#include <filesystem>
+
+std::string get_result_poses_path() {
+    const char* home_env = std::getenv("HOME");
+    if (home_env == nullptr) {
+        throw std::runtime_error("HOME environment variable not set.");
+    }
+    return (std::filesystem::path(home_env) / ".ros" / "surfel_lio_after_map_poses.txt").string();
+}
+std::shared_ptr<std::ofstream> regPosesFile = nullptr;
 
 using namespace lio;
-
-std::shared_ptr<std::ofstream> regPosesFile = nullptr;
 
 /**
  * @brief LIO processing result for publisher thread
@@ -558,8 +566,8 @@ private:
             }
         }
         
-        RCLCPP_INFO(this->get_logger(), 
-                   "Publisher thread stopped (published %zu frames)", 
+        RCLCPP_INFO(this->get_logger(),
+                   "Publisher thread stopped (published %zu frames)",
                    published_count);
     }
     
@@ -572,12 +580,13 @@ private:
         q.normalize();
 
         {
-            if ( ! regPosesFile ) regPosesFile = std::make_shared<std::ofstream>("./surfel_lio_after_map_poses.txt");
+            if ( ! regPosesFile ) regPosesFile = std::make_shared<std::ofstream>(get_result_poses_path());
             if ( regPosesFile && regPosesFile->is_open() )
             {
                 const int64_t stamp = ros_time.nanoseconds();
                 (*regPosesFile) << stamp << " " << state.m_position.x() << " " << state.m_position.y() << " " << state.m_position.z() << " " << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << std::endl;
             }
+            //RCLCPP_INFO_STREAM(this->get_logger(), "stored poses...? reg: " << int(!regPosesFile));
         }
         
         auto pose_msg = geometry_msgs::msg::PoseStamped();
