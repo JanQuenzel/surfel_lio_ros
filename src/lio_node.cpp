@@ -17,6 +17,7 @@
 #include <nav_msgs/msg/odometry.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_ros/transform_broadcaster.h>
@@ -71,12 +72,20 @@ public:
         this->declare_parameter<std::string>("imu_topic", "/livox/imu");
         this->declare_parameter<std::string>("lidar_topic", "/livox/lidar");
         this->declare_parameter<std::string>("config_file", "");
+
+        //const std::string world_frame = "map";
+        //const std::string world_frame = "odom_vilens";
+        //const std::string base_frame = "base_link";
+        this->declare_parameter<std::string>("map_frame", "map");
+        this->declare_parameter<std::string>("base_frame", "base_link");
         this->declare_parameter<int>("init_imu_samples", 200);
 
         // Get parameters
         std::string imu_topic = this->get_parameter("imu_topic").as_string();
         std::string lidar_topic = this->get_parameter("lidar_topic").as_string();
         std::string config_path = this->get_parameter("config_file").as_string();
+        map_frame_ = this->get_parameter("map_frame").as_string();
+        base_frame_ = this->get_parameter("base_frame").as_string();
         init_imu_samples_ = this->get_parameter("init_imu_samples").as_int();
 
         RCLCPP_INFO(this->get_logger(), "Starting LIO Node");
@@ -118,10 +127,30 @@ public:
         // Create publishers
         odom_pub_ = this->create_publisher<nav_msgs::msg::Odometry>("/lio/odometry", 10);
         pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/lio/pose", 100);  // 100Hz for IMU rate
+        
         current_scan_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/lio/current_scan", 10);
         raw_scan_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/lio/raw_scan", 10);
         map_cloud_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/lio/map", 10);
         trajectory_pub_ = this->create_publisher<nav_msgs::msg::Path>("/lio/trajectory", 10);
+
+        // VILENS publishers:
+        // Topic: 
+        // /icp_odometry_vilens/corrected_pose
+        // => icp_odometry/icp_odometry_ros/src/icp_odometry_ros/icp_odometry_app.cpp w/ channel 2  
+        //    OR 
+        // => vilens/vilens/src/frontend/IcpHandler.cpp w/ POSE_CORRECTED_POSE => this is our normal pose, but w/ covar
+        // /vilens/pose_optimized -> is the same, right?
+        pose_w_cov_pub_ = this->create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>("/vilens/pose_optimized", 100);
+        // /vilens/point_cloud_transformed_processed
+        pc_transformed_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/vilens/point_cloud_transformed_processed", 10);
+        
+        // Minor nodes: 
+        // Topic: /vilens/point_cloud_transformed_processed_delayed
+        // => just a vilens_slam/vilens_slam/python/vilens_slam/delay_lidar.py subscribing to /vilens/point_cloud_transformed_processed
+        // Topic: /icp_odometry_vilens/corrected_pose_simple ? 
+        // => vilens_slam/vilens_slam/python/draw_covariance_image.py subscribing to /icp_odometry_vilens/corrected_pose => PoseWithCovarStamped
+        
+        
 
         // TF broadcaster
         tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
@@ -571,7 +600,7 @@ private:
                    published_count);
     }
     
-    // Publish pose only (called at IMU rate ~100Hz)
+    // Publish pose only (called at IMU rate ~100Hz) // CURRENTLY NOT!
     void publishPoseOnly(const State& state, double timestamp)
     {
         rclcpp::Time ros_time(static_cast<int64_t>(timestamp * 1e9));
@@ -591,7 +620,7 @@ private:
         
         auto pose_msg = geometry_msgs::msg::PoseStamped();
         pose_msg.header.stamp = ros_time;
-        pose_msg.header.frame_id = "map";
+        pose_msg.header.frame_id = map_frame_;
         
         pose_msg.pose.position.x = state.m_position.x();
         pose_msg.pose.position.y = state.m_position.y();
@@ -603,6 +632,17 @@ private:
         pose_msg.pose.orientation.w = q.w();
         
         pose_pub_->publish(pose_msg);
+
+        // TODO pose as propagated? only send when LIDAR is registered
+        auto pose_w_cov_msg = geometry_msgs::msg::PoseWithCovarianceStamped();
+        pose_w_cov_msg.header = pose_msg.header;
+        pose_w_cov_msg.pose.pose = pose_msg.pose;
+        for ( int i = 0; i < 36; ++i) 
+            pose_w_cov_msg.pose.covariance[i] = 0;
+        for ( int i = 0; i < 6; ++i) 
+            pose_w_cov_msg.pose.covariance[i * 6 + i] = 0.1;
+
+        pose_w_cov_pub_->publish(pose_w_cov_msg);
     }
     
     void publishOdometry(const State& state, double timestamp)
@@ -610,15 +650,15 @@ private:
         // Create ROS timestamp
         rclcpp::Time ros_time(static_cast<int64_t>(timestamp * 1e9));
         
-        // Convert rotation matrix to quaternion
+        // Convert rotation matrix to quaternion1
         Eigen::Quaternionf q(state.m_rotation);
         q.normalize();
         
         // Publish Odometry
         auto odom_msg = nav_msgs::msg::Odometry();
         odom_msg.header.stamp = ros_time;
-        odom_msg.header.frame_id = "map";
-        odom_msg.child_frame_id = "base_link";
+        odom_msg.header.frame_id = map_frame_;
+        odom_msg.child_frame_id = base_frame_;
         
         odom_msg.pose.pose.position.x = state.m_position.x();
         odom_msg.pose.pose.position.y = state.m_position.y();
@@ -670,9 +710,11 @@ private:
         // Broadcast TF: map -> base_link
         geometry_msgs::msg::TransformStamped transform;
         transform.header.stamp = ros_time;
-        transform.header.frame_id = "map";
-        transform.child_frame_id = "base_link";
-        
+
+        // Adaptation to VILENS
+        transform.header.frame_id = map_frame_;
+        transform.child_frame_id = base_frame_;
+
         transform.transform.translation.x = state.m_position.x();
         transform.transform.translation.y = state.m_position.y();
         transform.transform.translation.z = state.m_position.z();
@@ -683,11 +725,20 @@ private:
         transform.transform.rotation.w = q.w();
         
         tf_broadcaster_->sendTransform(transform);
+        // TODO: Clean up HACK
+        transform.child_frame_id = "base_vilens";
+        tf_broadcaster_->sendTransform(transform);
+        transform.child_frame_id = "base_vilens_propagated";
+        tf_broadcaster_->sendTransform(transform);
+        transform.child_frame_id = "base_vilens_optimized";
+        tf_broadcaster_->sendTransform(transform);
+        transform.child_frame_id = "base_vilens_smoothed";
+        tf_broadcaster_->sendTransform(transform);
         
         // Add to trajectory
         geometry_msgs::msg::PoseStamped pose_msg;
         pose_msg.header.stamp = ros_time;
-        pose_msg.header.frame_id = "map";
+        pose_msg.header.frame_id = map_frame_;
         pose_msg.pose.position.x = state.m_position.x();
         pose_msg.pose.position.y = state.m_position.y();
         pose_msg.pose.position.z = state.m_position.z();
@@ -698,7 +749,8 @@ private:
         
         trajectory_.poses.push_back(pose_msg);
         trajectory_.header.stamp = ros_time;
-        trajectory_.header.frame_id = "map";
+        trajectory_.header.frame_id = map_frame_;
+        
     }
     
     void publishVisualization(const LIOProcessingResult& result)
@@ -708,6 +760,7 @@ private:
         // 1. Publish processed scan (GREEN - downsampled)
         if (result.processed_cloud && !result.processed_cloud->empty()) {
             publishCurrentScan(result.processed_cloud, result.state, ros_time);
+            publishCurrentScanNormals(result.processed_cloud, result.state, ros_time);
         }
         
         // 2. Raw scan already published in processing thread
@@ -736,7 +789,7 @@ private:
         
         sensor_msgs::msg::PointCloud2 cloud_msg;
         cloud_msg.header.stamp = timestamp;
-        cloud_msg.header.frame_id = "map";
+        cloud_msg.header.frame_id = map_frame_;
         cloud_msg.height = 1;
         cloud_msg.width = cloud->size();
         cloud_msg.is_dense = false;
@@ -769,6 +822,79 @@ private:
         }
         
         current_scan_pub_->publish(cloud_msg);
+        //pc_transformed_pub_->publish(cloud_msg);
+    }
+
+        void publishCurrentScanNormals(const PointCloudPtr& cloud, const State& state, const rclcpp::Time& timestamp)
+    {
+        // Transform cloud to world frame
+        Eigen::Matrix4f T_wb = Eigen::Matrix4f::Identity();
+        T_wb.block<3, 3>(0, 0) = state.m_rotation;
+        T_wb.block<3, 1>(0, 3) = state.m_position;
+        
+        Eigen::Matrix4f T_il = Eigen::Matrix4f::Identity();
+        T_il.block<3, 3>(0, 0) = estimator_->m_params.R_il.template cast<float>();
+        T_il.block<3, 1>(0, 3) = estimator_->m_params.t_il.template cast<float>();
+        Eigen::Matrix4f T_wl = T_wb * T_il;
+        
+        sensor_msgs::msg::PointCloud2 cloud_msg;
+        cloud_msg.header.stamp = timestamp;
+        cloud_msg.header.frame_id = map_frame_;
+        cloud_msg.height = 1;
+        cloud_msg.width = cloud->size();
+        cloud_msg.is_dense = false;
+        cloud_msg.is_bigendian = false;
+        
+        sensor_msgs::PointCloud2Modifier modifier(cloud_msg);
+        //modifier.setPointCloud2FieldsByString(3, "xyz", "intensity","normal_xyz");
+        modifier.setPointCloud2Fields(9,
+            "x", 1, sensor_msgs::msg::PointField::FLOAT32,
+            "y", 1, sensor_msgs::msg::PointField::FLOAT32,
+            "z", 1, sensor_msgs::msg::PointField::FLOAT32,
+            "rgb", 1, sensor_msgs::msg::PointField::FLOAT32,
+            "intensity", 1, sensor_msgs::msg::PointField::FLOAT32,
+            "curvature", 1, sensor_msgs::msg::PointField::FLOAT32,
+            "normal_x", 1, sensor_msgs::msg::PointField::FLOAT32,
+            "normal_y", 1, sensor_msgs::msg::PointField::FLOAT32,
+            "normal_z", 1, sensor_msgs::msg::PointField::FLOAT32
+        );
+        modifier.resize(cloud->size());
+        
+        sensor_msgs::PointCloud2Iterator<float> iter_x(cloud_msg, "x");
+        sensor_msgs::PointCloud2Iterator<float> iter_y(cloud_msg, "y");
+        sensor_msgs::PointCloud2Iterator<float> iter_z(cloud_msg, "z");
+        sensor_msgs::PointCloud2Iterator<uint8_t> iter_r(cloud_msg, "r");
+        sensor_msgs::PointCloud2Iterator<uint8_t> iter_g(cloud_msg, "g");
+        sensor_msgs::PointCloud2Iterator<uint8_t> iter_b(cloud_msg, "b");
+        sensor_msgs::PointCloud2Iterator<float> iter_cu(cloud_msg, "intensity");
+        sensor_msgs::PointCloud2Iterator<float> iter_int(cloud_msg, "curvature");
+        sensor_msgs::PointCloud2Iterator<float> iter_nx(cloud_msg, "normal_x");
+        sensor_msgs::PointCloud2Iterator<float> iter_ny(cloud_msg, "normal_y");
+        sensor_msgs::PointCloud2Iterator<float> iter_nz(cloud_msg, "normal_z");
+        
+        for (const auto& point : *cloud) {
+            // Transform to world frame
+            Eigen::Vector3f p_w = T_wl.block<3, 3>(0, 0) * Eigen::Vector3f(point.x, point.y, point.z) + T_wl.block<3, 1>(0, 3);
+            
+            *iter_x = p_w.x();
+            *iter_y = p_w.y();
+            *iter_z = p_w.z();
+            *iter_r = 0;
+            *iter_g = 0;
+            *iter_b = 255;
+            *iter_int = point.intensity;
+            *iter_cu = 0;
+            *iter_nx = 0;
+            *iter_ny = 0;
+            *iter_nz = 1;
+            
+            ++iter_x; ++iter_y; ++iter_z;
+            ++iter_r; ++iter_g; ++iter_b;
+            ++iter_int; ++iter_cu;
+            ++iter_nx; ++iter_ny; ++iter_nz;
+        }
+        
+        pc_transformed_pub_->publish(cloud_msg);
     }
     
     void publishRawScan(const PointCloudPtr& cloud, const State& state, const rclcpp::Time& timestamp)
@@ -785,7 +911,7 @@ private:
         
         sensor_msgs::msg::PointCloud2 cloud_msg;
         cloud_msg.header.stamp = timestamp;
-        cloud_msg.header.frame_id = "map";
+        cloud_msg.header.frame_id = map_frame_;
         cloud_msg.height = 1;
         cloud_msg.width = cloud->size();
         cloud_msg.is_dense = false;
@@ -826,7 +952,7 @@ private:
     {
         sensor_msgs::msg::PointCloud2 cloud_msg;
         cloud_msg.header.stamp = timestamp;
-        cloud_msg.header.frame_id = "map";
+        cloud_msg.header.frame_id = map_frame_;
         cloud_msg.height = 1;
         cloud_msg.width = cloud->size();
         cloud_msg.is_dense = false;
@@ -909,6 +1035,8 @@ private:
     // Publishers
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
+    rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr pose_w_cov_pub_;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pc_transformed_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr current_scan_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr raw_scan_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_cloud_pub_;
@@ -916,6 +1044,8 @@ private:
     
     // TF broadcaster
     std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
+    std::string map_frame_;
+    std::string base_frame_;
     
     // Trajectory storage
     nav_msgs::msg::Path trajectory_;

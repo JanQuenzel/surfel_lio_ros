@@ -36,6 +36,16 @@ def generate_launch_description():
             description='LiDAR point cloud topic'
         ),
         DeclareLaunchArgument(
+            'map_frame',
+            default_value='odom_vilens',
+            description='odometry frame ( equal to local map origin )'
+        ),
+        DeclareLaunchArgument(
+            'base_frame',
+            default_value='base_link',
+            description='base frame ( equal to IMU frame )'
+        ),
+        DeclareLaunchArgument(
             'config_file',
             default_value=default_config,
             description='LIO configuration file path'
